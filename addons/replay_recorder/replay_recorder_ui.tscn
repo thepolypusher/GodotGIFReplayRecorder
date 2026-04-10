@@ -1,0 +1,214 @@
+[gd_scene load_steps=2 format=3 uid="uid://dzpqah1r456t4"]
+
+[ext_resource type="Script" uid="uid://ddvo3d865mi2a" path="res://addons/replay_recorder/replay_recorder_ui.gd" id="1_script"]
+
+[node name="ReplayRecorderUI" type="CanvasLayer"]
+layer = 2000
+script = ExtResource("1_script")
+
+[node name="FullScreen" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+process_mode = 3
+mouse_filter = 0
+
+[node name="Background" type="ColorRect" parent="FullScreen"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+color = Color(0, 0, 0, 0.85)
+
+[node name="MainPanel" type="MarginContainer" parent="FullScreen"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 60
+theme_override_constants/margin_top = 40
+theme_override_constants/margin_right = 60
+theme_override_constants/margin_bottom = 40
+
+[node name="VBox" type="VBoxContainer" parent="FullScreen/MainPanel"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="TitleBar" type="HBoxContainer" parent="FullScreen/MainPanel/VBox"]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="FullScreen/MainPanel/VBox/TitleBar"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "REPLAY RECORDER"
+
+[node name="Spacer1" type="Control" parent="FullScreen/MainPanel/VBox/TitleBar"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BufferInfoLabel" type="Label" parent="FullScreen/MainPanel/VBox/TitleBar"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Buffer: 0s / 0MB"
+
+[node name="Spacer2" type="Control" parent="FullScreen/MainPanel/VBox/TitleBar"]
+layout_mode = 2
+custom_minimum_size = Vector2(20, 0)
+
+[node name="CloseButton" type="Button" parent="FullScreen/MainPanel/VBox/TitleBar"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "X"
+
+[node name="PreviewCenter" type="CenterContainer" parent="FullScreen/MainPanel/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="PreviewRect" type="TextureRect" parent="FullScreen/MainPanel/VBox/PreviewCenter"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="TimelineSection" type="VBoxContainer" parent="FullScreen/MainPanel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="TimelineHelp" type="Label" parent="FullScreen/MainPanel/VBox/TimelineSection"]
+layout_mode = 2
+text = "Left-click: set start | Right-click: set end"
+horizontal_alignment = 1
+
+[node name="TimelineBar" type="Control" parent="FullScreen/MainPanel/VBox/TimelineSection"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(0, 54)
+
+[node name="TimeLabels" type="HBoxContainer" parent="FullScreen/MainPanel/VBox/TimelineSection"]
+layout_mode = 2
+
+[node name="StartTimeLabel" type="Label" parent="FullScreen/MainPanel/VBox/TimelineSection/TimeLabels"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Start: 0.0s"
+
+[node name="Spacer" type="Control" parent="FullScreen/MainPanel/VBox/TimelineSection/TimeLabels"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DurationLabel" type="Label" parent="FullScreen/MainPanel/VBox/TimelineSection/TimeLabels"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Duration: 0.0s"
+
+[node name="Spacer2" type="Control" parent="FullScreen/MainPanel/VBox/TimelineSection/TimeLabels"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="EndTimeLabel" type="Label" parent="FullScreen/MainPanel/VBox/TimelineSection/TimeLabels"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "End: 0.0s"
+
+[node name="ControlsContainer" type="HBoxContainer" parent="FullScreen/MainPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="ResetTrimButton" type="Button" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Reset"
+
+[node name="Spacer" type="Control" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="SizeLabel" type="Label" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+layout_mode = 2
+text = "Size:"
+
+[node name="SizeDropdown" type="OptionButton" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="FPSLabel" type="Label" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+layout_mode = 2
+text = "FPS:"
+
+[node name="FPSDropdown" type="OptionButton" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="ActionContainer" type="HBoxContainer" parent="FullScreen/MainPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="ExportInfoLabel" type="Label" parent="FullScreen/MainPanel/VBox/ActionContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "0 frames, 0.0s"
+size_flags_horizontal = 3
+
+[node name="OpenFolderButton" type="Button" parent="FullScreen/MainPanel/VBox/ActionContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Open GIF Folder"
+
+[node name="SaveButton" type="Button" parent="FullScreen/MainPanel/VBox/ActionContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Save GIF"
+
+[node name="ProgressContainer" type="VBoxContainer" parent="FullScreen/MainPanel/VBox"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ProgressLabel" type="Label" parent="FullScreen/MainPanel/VBox/ProgressContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Encoding... 0%"
+horizontal_alignment = 1
+
+[node name="ProgressBarRow" type="HBoxContainer" parent="FullScreen/MainPanel/VBox/ProgressContainer"]
+layout_mode = 2
+theme_override_constants/separation = 12
+alignment = 1
+
+[node name="ProgressBar" type="ProgressBar" parent="FullScreen/MainPanel/VBox/ProgressContainer/ProgressBarRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.0
+max_value = 100.0
+value = 0.0
+
+[node name="Spinner" type="Control" parent="FullScreen/MainPanel/VBox/ProgressContainer/ProgressBarRow"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(28, 28)
+
+[node name="CancelButton" type="Button" parent="FullScreen/MainPanel/VBox/ProgressContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Cancel"
+
+[node name="HintLabel" type="Label" parent="FullScreen/MainPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "ESC: Close  |  LMB: Set Start  |  RMB: Set End  |  Arrows: Browse  |  Enter: Save"
+horizontal_alignment = 1

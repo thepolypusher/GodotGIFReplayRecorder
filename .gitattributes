@@ -1,0 +1,6 @@
+# Asset Library only downloads the addons/ folder
+/.gitignore export-ignore
+/.gitattributes export-ignore
+/.github export-ignore
+/README.md export-ignore
+/LICENSE export-ignore

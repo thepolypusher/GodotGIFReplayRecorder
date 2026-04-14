@@ -70,15 +70,15 @@ layout_mode = 2
 text = "X"
 
 [node name="PreviewCenter" type="CenterContainer" parent="FullScreen/MainPanel/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 
 [node name="PreviewRect" type="TextureRect" parent="FullScreen/MainPanel/VBox/PreviewCenter"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(640, 360)
 layout_mode = 2
 expand_mode = 1
-stretch_mode = 5
+stretch_mode = 4
 
 [node name="TimelineSection" type="VBoxContainer" parent="FullScreen/MainPanel/VBox"]
 layout_mode = 2

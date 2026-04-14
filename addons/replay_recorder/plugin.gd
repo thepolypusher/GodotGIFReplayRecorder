@@ -17,13 +17,13 @@ const AUTOLOAD_PATH := "res://addons/replay_recorder/replay_recorder.gd"
 ##                           doesn't exist in Input Map, a default F11 binding is added
 ##                           at runtime. Override by defining the action in Input Map.
 ## buffer_resolution ....... Capture width in pixels (height derived from viewport aspect
-##                           ratio). Higher = better GIF quality but fewer seconds of
-##                           buffer per MB. Requires restart.
-## default_memory_budget_mb  Starting memory budget for frame buffer. Players can change
-##                           this at runtime. At 640px, expect ~200-350KB per frame, so
-##                           150MB ~ 25-40 seconds at 20fps.
-## max_export_seconds ...... Maximum clip duration players can export. Prevents accidental
-##                           multi-minute GIF exports.
+##                           ratio). Higher = better GIF quality but more memory per
+##                           second of buffer. Requires restart.
+## default_buffer_duration .. How many seconds of gameplay to keep in the rolling buffer.
+##                           Players can change this at runtime (10–60s). Call
+##                           estimate_buffer_size_mb() to preview memory cost.
+## max_buffer_duration ..... Upper bound for the player-facing buffer duration slider.
+##                           Raise this if your game needs longer replay windows.
 ## enabled_in_release ...... Whether the recorder runs in exported/release builds. Set
 ##                           false if you only want it available during development.
 ## watermark_image ......... Path to a PNG/image overlaid on every exported frame. Leave
@@ -61,17 +61,17 @@ const SETTINGS := {
 		"hint": PROPERTY_HINT_RANGE,
 		"hint_string": "240,960,1",
 	},
-	"addons/replay_recorder/default_memory_budget_mb": {
-		"value": 150,
-		"type": TYPE_INT,
-		"hint": PROPERTY_HINT_RANGE,
-		"hint_string": "10,500,10",
-	},
-	"addons/replay_recorder/max_export_seconds": {
-		"value": 30.0,
+	"addons/replay_recorder/default_buffer_duration": {
+		"value": 20.0,
 		"type": TYPE_FLOAT,
 		"hint": PROPERTY_HINT_RANGE,
-		"hint_string": "5,60,1",
+		"hint_string": "10,60,1",
+	},
+	"addons/replay_recorder/max_buffer_duration": {
+		"value": 60.0,
+		"type": TYPE_FLOAT,
+		"hint": PROPERTY_HINT_RANGE,
+		"hint_string": "10,300,5",
 	},
 	"addons/replay_recorder/enabled_in_release": {
 		"value": true,

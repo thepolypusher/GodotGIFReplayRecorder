@@ -1,7 +1,6 @@
 # Godot
 .godot/
 *.import
-*.uid
 
 # OS
 .DS_Store

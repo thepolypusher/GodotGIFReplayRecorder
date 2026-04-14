@@ -17,8 +17,8 @@ var _ui_layer: int
 var _toggle_action: String
 var _buffer_width: int
 var _buffer_height: int
-var _default_memory_budget_mb: int
-var _max_export_seconds: float
+var _default_buffer_duration: float
+var _max_buffer_duration: float
 var _enabled_in_release: bool
 var _watermark_image_path: String
 var _watermark_opacity: float
@@ -33,7 +33,7 @@ var enabled: bool = true:
 	set(value):
 		enabled = value
 		set_process(enabled and _can_run)
-var memory_budget_bytes: int = 150 * 1024 * 1024
+var buffer_duration: float = 20.0
 var capture_fps: int = 20
 
 # --- Rolling buffer ---
@@ -79,9 +79,9 @@ func _ready() -> void:
 	_can_run = true
 	set_process(enabled)
 
-	print("[GIFReplayRecorder] Ready — %dx%d @ %dfps, budget %dMB, toggle: %s" % [
+	print("[GIFReplayRecorder] Ready — %dx%d @ %dfps, buffer %.0fs (~%.1fMB), toggle: %s" % [
 		_buffer_width, _buffer_height, capture_fps,
-		memory_budget_bytes / 1024 / 1024, _toggle_action
+		buffer_duration, estimate_buffer_size_mb(), _toggle_action
 	])
 
 
@@ -185,8 +185,8 @@ func get_export_directory() -> String:
 	return global_path
 
 
-func get_max_export_seconds() -> float:
-	return _max_export_seconds
+func get_max_buffer_duration() -> float:
+	return _max_buffer_duration
 
 
 func get_buffer_width() -> int:
@@ -207,10 +207,49 @@ func update_capture_fps(new_fps: int) -> void:
 	save_player_settings()
 
 
-func update_memory_budget(new_mb: int) -> void:
-	memory_budget_bytes = clampi(new_mb, 10, 500) * 1024 * 1024
-	_evict_over_budget()
+func update_buffer_duration(new_seconds: float) -> void:
+	buffer_duration = clampf(new_seconds, 10.0, _max_buffer_duration)
+	_evict_over_time_limit()
 	save_player_settings()
+
+
+## Estimate the memory usage in megabytes for a given buffer configuration.
+## Uses the actual observed compression ratio when frames exist in the buffer,
+## otherwise falls back to a conservative heuristic (~4:1 zstd compression).
+## Pass -1 for any parameter to use the current setting.
+func estimate_buffer_size_mb(
+	duration_seconds: float = -1.0,
+	width: int = -1,
+	height: int = -1,
+	fps: int = -1,
+) -> float:
+	if duration_seconds < 0.0:
+		duration_seconds = buffer_duration
+	if width < 0:
+		width = _buffer_width
+	if height < 0:
+		height = _buffer_height
+	if fps < 0:
+		fps = capture_fps
+
+	var total_frames := ceili(duration_seconds * fps)
+	var avg_frame_bytes: float
+
+	if _frame_buffer.size() > 0 and _current_memory_usage > 0:
+		# Scale observed average by resolution ratio
+		var observed_avg := float(_current_memory_usage) / _frame_buffer.size()
+		var observed_pixels := _buffer_width * _buffer_height
+		var target_pixels := width * height
+		avg_frame_bytes = observed_avg * float(target_pixels) / float(observed_pixels)
+	else:
+		# Conservative heuristic: RGBA8 raw size with ~4:1 zstd compression
+		avg_frame_bytes = float(width * height * 4) / 4.0
+
+	return (total_frames * avg_frame_bytes) / (1024.0 * 1024.0)
+
+
+func get_current_memory_usage_mb() -> float:
+	return _current_memory_usage / (1024.0 * 1024.0)
 
 
 func update_enabled(new_enabled: bool) -> void:
@@ -295,11 +334,15 @@ func _capture_frame() -> void:
 	_frame_index += 1
 	_frame_buffer.append(entry)
 	_current_memory_usage += compressed.size()
-	_evict_over_budget()
+	_evict_over_time_limit()
 
 
-func _evict_over_budget() -> void:
-	while _current_memory_usage > memory_budget_bytes and _frame_buffer.size() > 1:
+func _evict_over_time_limit() -> void:
+	if _frame_buffer.size() < 2:
+		return
+	var latest_time: float = _frame_buffer.back().timestamp
+	var cutoff := latest_time - buffer_duration
+	while _frame_buffer.size() > 1 and _frame_buffer[0].timestamp < cutoff:
 		var evicted: Dictionary = _frame_buffer.pop_front()
 		_current_memory_usage -= evicted.data.size()
 
@@ -322,12 +365,13 @@ func _load_developer_settings() -> void:
 	var buf_width: int = ProjectSettings.get_setting(
 		"addons/replay_recorder/buffer_resolution", 640
 	)
-	_default_memory_budget_mb = ProjectSettings.get_setting(
-		"addons/replay_recorder/default_memory_budget_mb", 150
+	_default_buffer_duration = ProjectSettings.get_setting(
+		"addons/replay_recorder/default_buffer_duration", 20.0
 	)
-	_max_export_seconds = ProjectSettings.get_setting(
-		"addons/replay_recorder/max_export_seconds", 30.0
+	_max_buffer_duration = ProjectSettings.get_setting(
+		"addons/replay_recorder/max_buffer_duration", 60.0
 	)
+	buffer_duration = _default_buffer_duration
 	_enabled_in_release = ProjectSettings.get_setting(
 		"addons/replay_recorder/enabled_in_release", true
 	)
@@ -367,15 +411,17 @@ func _load_player_settings() -> void:
 	if config.load(PLAYER_SETTINGS_PATH) != OK:
 		return
 	enabled = config.get_value("recorder", "enabled", true)
-	var budget_mb: int = config.get_value("recorder", "memory_budget_mb", _default_memory_budget_mb)
-	memory_budget_bytes = clampi(budget_mb, 10, 500) * 1024 * 1024
+	buffer_duration = clampf(
+		config.get_value("recorder", "buffer_duration", _default_buffer_duration),
+		10.0, _max_buffer_duration
+	)
 	capture_fps = config.get_value("recorder", "capture_fps", 20)
 
 
 func save_player_settings() -> void:
 	var config := ConfigFile.new()
 	config.set_value("recorder", "enabled", enabled)
-	config.set_value("recorder", "memory_budget_mb", memory_budget_bytes / 1024 / 1024)
+	config.set_value("recorder", "buffer_duration", buffer_duration)
 	config.set_value("recorder", "capture_fps", capture_fps)
 	config.save(PLAYER_SETTINGS_PATH)
 

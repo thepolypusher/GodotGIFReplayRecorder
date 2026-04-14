@@ -38,11 +38,15 @@ var _encoding_done: bool = false
 var _encoding_output_path: String = ""
 var _spinner_angle: float = 0.0
 
+# --- Real-time tracking (immune to Engine.time_scale = 0) ---
+var _last_process_msec: int = 0
+
 # --- Node references (assigned in _ready) ---
 @onready var _background: ColorRect = %Background
 @onready var _title_label: Label = %TitleLabel
 @onready var _buffer_info_label: Label = %BufferInfoLabel
 @onready var _close_button: Button = %CloseButton
+@onready var _preview_center: CenterContainer = %PreviewCenter
 @onready var _preview_rect: TextureRect = %PreviewRect
 @onready var _timeline_bar: Control = %TimelineBar
 @onready var _start_time_label: Label = %StartTimeLabel
@@ -81,6 +85,7 @@ func _ready() -> void:
 	_timeline_bar.gui_input.connect(_on_timeline_input)
 	_timeline_bar.mouse_exited.connect(_on_timeline_mouse_exited)
 	_spinner.draw.connect(_on_spinner_draw)
+	_preview_center.resized.connect(_update_preview_size)
 
 	# Setup reusable preview texture
 	_preview_texture = ImageTexture.new()
@@ -113,12 +118,19 @@ func setup(recorder: Node) -> void:
 	_update_export_info()
 	_update_buffer_info()
 	_update_preview(_trim_start)
+	_update_preview_size()
 	_set_encoding_ui(false)
 
+	_last_process_msec = Time.get_ticks_msec()
 	_save_button.grab_focus.call_deferred()
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
+	# Use real time so the UI works even when Engine.time_scale = 0 (game paused)
+	var now_msec := Time.get_ticks_msec()
+	var real_delta := (now_msec - _last_process_msec) / 1000.0 if _last_process_msec > 0 else 0.0
+	_last_process_msec = now_msec
+
 	# Poll encoding progress
 	if _encoding_thread != null:
 		_encoding_mutex.lock()
@@ -133,7 +145,7 @@ func _process(delta: float) -> void:
 			_progress_label.text = "Encoding... %d%%" % int(progress * 100.0)
 
 		# Animate spinner
-		_spinner_angle += delta * TAU # One full rotation per second
+		_spinner_angle += real_delta * TAU # One full rotation per second
 		_spinner.queue_redraw()
 
 		if done:
@@ -144,7 +156,7 @@ func _process(delta: float) -> void:
 
 	# Preview playback
 	if _preview_playing and _buffer_size > 0 and _hovered_index < 0:
-		_preview_timer += delta
+		_preview_timer += real_delta
 		var frame_duration := 1.0 / _export_fps
 		if _preview_timer >= frame_duration:
 			_preview_timer = 0.0
@@ -336,6 +348,32 @@ func _update_preview(buffer_index: int) -> void:
 	_preview_texture.set_image(img)
 
 
+func _update_preview_size() -> void:
+	if _recorder == null:
+		return
+	var available := _preview_center.size
+	if available.x <= 0 or available.y <= 0:
+		return
+
+	var buf_w: int = _recorder.get_buffer_width()
+	var buf_h: int = _recorder.get_buffer_height()
+	var aspect := float(buf_w) / buf_h
+
+	if _export_width >= buf_w:
+		# Largest resolution: scale to fill available space
+		var fit_w := int(available.x)
+		var fit_h := int(fit_w / aspect)
+		if fit_h > int(available.y):
+			fit_h = int(available.y)
+			fit_w = int(fit_h * aspect)
+		_preview_rect.custom_minimum_size = Vector2(fit_w, fit_h)
+	else:
+		# Smaller export sizes: show at actual resolution
+		_preview_rect.custom_minimum_size = Vector2(
+			_export_width, _export_height,
+		)
+
+
 # =============================================================================
 # Export Controls
 # =============================================================================
@@ -397,6 +435,7 @@ func _on_size_selected(index: int) -> void:
 	_export_width = int(parts[0])
 	_export_height = int(parts[1])
 	_update_export_info()
+	_update_preview_size()
 
 
 func _on_fps_selected(index: int) -> void:
@@ -425,25 +464,18 @@ func _update_export_info() -> void:
 	var duration := 0.0
 	if frame_count > 1:
 		duration = _recorder.get_frame_timestamp(_trim_end) - _recorder.get_frame_timestamp(_trim_start)
-	var max_seconds: float = _recorder.get_max_export_seconds()
-
 	_export_info_label.text = "%d frames, %s, %dx%d" % [
 		frame_count, _format_time(duration), _export_width, _export_height
 	]
 
-	# Enforce max clip duration
-	if duration > max_seconds:
-		_save_button.disabled = true
-		_save_button.tooltip_text = "Trim to under %ds to export" % int(max_seconds)
-	else:
-		_save_button.disabled = false
-		_save_button.tooltip_text = ""
-
 
 func _update_buffer_info() -> void:
 	var duration: float = _recorder.get_buffer_duration_seconds()
-	var budget_mb: int = _recorder.memory_budget_bytes / 1024 / 1024
-	_buffer_info_label.text = "Buffer: %s / %dMB" % [_format_time(duration), budget_mb]
+	var limit: float = _recorder.buffer_duration
+	var mb: float = _recorder.get_current_memory_usage_mb()
+	_buffer_info_label.text = "Buffer: %s / %s (~%.1fMB)" % [
+		_format_time(duration), _format_time(limit), mb
+	]
 
 
 func _format_time(seconds: float) -> String:
@@ -464,9 +496,6 @@ func _format_time(seconds: float) -> String:
 func _on_save_pressed() -> void:
 	if _encoding_thread != null:
 		return
-	if _save_button.disabled:
-		return
-
 	# Collect compressed frame data on main thread (fast — just reference copies)
 	var frame_entries: Array[Dictionary] = []
 	for i in range(_trim_start, _trim_end + 1):

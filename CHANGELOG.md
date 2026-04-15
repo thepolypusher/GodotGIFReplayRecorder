@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.1.1
+
+### Fixed
+- Size and FPS dropdowns rendered behind the dim background and other UI elements when the addon ran at a high `ui_layer`. The dropdowns now use a Control-based popup inside the same CanvasLayer instead of `OptionButton`'s `Window`-based popup, so they always draw on top.
+
+### Changed
+- Dropdown popups flip upward when they would overflow the bottom of the viewport.
+- ESC dismisses an open dropdown popup before closing the recorder UI.
+
+### Docs
+- Added a **Programmatic Control** section covering persistent player-facing toggles (`update_enabled`, `update_buffer_duration`, `update_capture_fps`) and transient per-scene pause via the `enabled` property — with explicit guidance on which to use for options menus vs. main-menu/cutscene scenes.
+- Top-level README synced with the addon README (the top-level was stale, still referencing the removed `default_memory_budget_mb` and `max_export_seconds` settings).
+
 ## v1.1.0
 
 ### Breaking changes

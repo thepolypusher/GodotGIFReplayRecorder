@@ -138,7 +138,7 @@ size_flags_horizontal = 3
 layout_mode = 2
 text = "Size:"
 
-[node name="SizeDropdown" type="OptionButton" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+[node name="SizeDropdown" type="Button" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
 unique_name_in_owner = true
 layout_mode = 2
 
@@ -146,7 +146,7 @@ layout_mode = 2
 layout_mode = 2
 text = "FPS:"
 
-[node name="FPSDropdown" type="OptionButton" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
+[node name="FPSDropdown" type="Button" parent="FullScreen/MainPanel/VBox/ControlsContainer"]
 unique_name_in_owner = true
 layout_mode = 2
 

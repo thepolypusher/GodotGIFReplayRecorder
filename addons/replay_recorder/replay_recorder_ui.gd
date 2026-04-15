@@ -28,6 +28,11 @@ var _preview_timer: float = 0.0
 var _export_width: int = 480
 var _export_height: int = 270
 var _export_fps: int = 20
+var _size_options: Array[String] = []
+var _fps_options: Array[String] = []
+var _size_selected_index: int = 0
+var _fps_selected_index: int = 0
+var _open_dropdown_overlay: Control = null
 
 # --- Encoding ---
 var _encoding_thread: Thread = null
@@ -53,8 +58,8 @@ var _last_process_msec: int = 0
 @onready var _duration_label: Label = %DurationLabel
 @onready var _end_time_label: Label = %EndTimeLabel
 @onready var _reset_trim_button: Button = %ResetTrimButton
-@onready var _size_dropdown: OptionButton = %SizeDropdown
-@onready var _fps_dropdown: OptionButton = %FPSDropdown
+@onready var _size_dropdown: Button = %SizeDropdown
+@onready var _fps_dropdown: Button = %FPSDropdown
 @onready var _export_info_label: Label = %ExportInfoLabel
 @onready var _open_folder_button: Button = %OpenFolderButton
 @onready var _save_button: Button = %SaveButton
@@ -78,8 +83,8 @@ func _ready() -> void:
 	_save_button.pressed.connect(_on_save_pressed)
 	_open_folder_button.pressed.connect(_on_open_folder_pressed)
 	_cancel_button.pressed.connect(_on_cancel_pressed)
-	_size_dropdown.item_selected.connect(_on_size_selected)
-	_fps_dropdown.item_selected.connect(_on_fps_selected)
+	_size_dropdown.pressed.connect(_on_size_dropdown_pressed)
+	_fps_dropdown.pressed.connect(_on_fps_dropdown_pressed)
 
 	_timeline_bar.draw.connect(_on_timeline_draw)
 	_timeline_bar.gui_input.connect(_on_timeline_input)
@@ -90,10 +95,6 @@ func _ready() -> void:
 	# Setup reusable preview texture
 	_preview_texture = ImageTexture.new()
 	_preview_rect.texture = _preview_texture
-
-	# OptionButton popups are Windows — they don't inherit theme from the scene
-	# tree, so they break in projects without a default Theme. Apply overrides.
-	_style_dropdown_popups()
 
 
 func setup(recorder: Node) -> void:
@@ -176,7 +177,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event.is_action_pressed("ui_cancel"):
 		get_viewport().set_input_as_handled()
-		_on_close_pressed()
+		if _open_dropdown_overlay != null:
+			_close_dropdown_popup()
+		else:
+			_on_close_pressed()
 	elif event.is_action_pressed("ui_accept"):
 		get_viewport().set_input_as_handled()
 		_on_save_pressed()
@@ -379,24 +383,8 @@ func _update_preview_size() -> void:
 # =============================================================================
 
 
-func _style_dropdown_popups() -> void:
-	var panel_style := StyleBoxFlat.new()
-	panel_style.bg_color = Color(0.15, 0.15, 0.15, 0.95)
-	panel_style.set_content_margin_all(4)
-	var hover_style := StyleBoxFlat.new()
-	hover_style.bg_color = Color(0.3, 0.3, 0.5)
-	hover_style.set_content_margin_all(4)
-
-	for dropdown: OptionButton in [_size_dropdown, _fps_dropdown]:
-		var popup := dropdown.get_popup()
-		popup.add_theme_color_override("font_color", Color.WHITE)
-		popup.add_theme_color_override("font_hover_color", Color.WHITE)
-		popup.add_theme_stylebox_override("panel", panel_style)
-		popup.add_theme_stylebox_override("hover", hover_style)
-
-
 func _setup_size_dropdown() -> void:
-	_size_dropdown.clear()
+	_size_options.clear()
 	var buf_w: int = _recorder.get_buffer_width()
 	var buf_h: int = _recorder.get_buffer_height()
 	var aspect := float(buf_w) / buf_h
@@ -412,25 +400,26 @@ func _setup_size_dropdown() -> void:
 		var h := int(w / aspect)
 		if h % 2 != 0:
 			h += 1
-		_size_dropdown.add_item("%dx%d" % [w, h])
+		_size_options.append("%dx%d" % [w, h])
 
 	# Default to buffer resolution (second entry, or first if buf_w == 640)
-	_size_dropdown.selected = 0 if buf_w == 640 else 1
+	_size_selected_index = 0 if buf_w == 640 else 1
+	_size_dropdown.text = _size_options[_size_selected_index]
 	_export_width = buf_w
 	_export_height = buf_h
 
 
 func _setup_fps_dropdown() -> void:
-	_fps_dropdown.clear()
-	_fps_dropdown.add_item("20")
-	_fps_dropdown.add_item("15")
-	_fps_dropdown.add_item("10")
-	_fps_dropdown.selected = 0
+	_fps_options = ["20", "15", "10"]
+	_fps_selected_index = 0
+	_fps_dropdown.text = _fps_options[_fps_selected_index]
 	_export_fps = 20
 
 
 func _on_size_selected(index: int) -> void:
-	var text := _size_dropdown.get_item_text(index)
+	_size_selected_index = index
+	var text := _size_options[index]
+	_size_dropdown.text = text
 	var parts := text.split("x")
 	_export_width = int(parts[0])
 	_export_height = int(parts[1])
@@ -439,9 +428,96 @@ func _on_size_selected(index: int) -> void:
 
 
 func _on_fps_selected(index: int) -> void:
-	var text := _fps_dropdown.get_item_text(index)
+	_fps_selected_index = index
+	var text := _fps_options[index]
+	_fps_dropdown.text = text
 	_export_fps = int(text)
 	_update_export_info()
+
+
+func _on_size_dropdown_pressed() -> void:
+	# Toggle: if open, close (any open click was already swallowed by the overlay)
+	if _open_dropdown_overlay != null:
+		_close_dropdown_popup()
+		return
+	_show_dropdown_popup(_size_dropdown, _size_options, _on_size_selected)
+
+
+func _on_fps_dropdown_pressed() -> void:
+	if _open_dropdown_overlay != null:
+		_close_dropdown_popup()
+		return
+	_show_dropdown_popup(_fps_dropdown, _fps_options, _on_fps_selected)
+
+
+# Built without OptionButton.get_popup() because that popup is a Window subclass
+# and renders independently of the parent CanvasLayer's z-order — when the addon
+# runs at a high layer, the popup ends up behind the rest of the recorder UI and
+# behind game UI on lower layers. A Control-based popup in the same CanvasLayer
+# inherits the correct draw order.
+func _show_dropdown_popup(button: Button, items: Array[String], on_select: Callable) -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(overlay)
+	_open_dropdown_overlay = overlay
+
+	var panel := PanelContainer.new()
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.15, 0.15, 0.15, 0.98)
+	panel_style.set_content_margin_all(4)
+	panel.add_theme_stylebox_override("panel", panel_style)
+	overlay.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 0)
+	panel.add_child(vbox)
+
+	var hover_style := StyleBoxFlat.new()
+	hover_style.bg_color = Color(0.3, 0.3, 0.5)
+	hover_style.set_content_margin_all(4)
+	var transparent_style := StyleBoxEmpty.new()
+	transparent_style.set_content_margin_all(4)
+
+	for i in items.size():
+		var item := Button.new()
+		item.text = items[i]
+		item.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		item.custom_minimum_size = Vector2(button.size.x, 0)
+		item.add_theme_stylebox_override("normal", transparent_style)
+		item.add_theme_stylebox_override("hover", hover_style)
+		item.add_theme_stylebox_override("pressed", hover_style)
+		item.add_theme_stylebox_override("focus", transparent_style)
+		item.add_theme_color_override("font_color", Color.WHITE)
+		item.add_theme_color_override("font_hover_color", Color.WHITE)
+		var idx := i
+		item.pressed.connect(func() -> void:
+			_close_dropdown_popup()
+			on_select.call(idx)
+		)
+		vbox.add_child(item)
+
+	overlay.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed:
+			if not panel.get_global_rect().has_point(overlay.get_global_mouse_position()):
+				_close_dropdown_popup()
+	)
+
+	# Position below the button, or above if it would overflow the viewport
+	var button_rect := button.get_global_rect()
+	var popup_size := panel.get_combined_minimum_size()
+	var viewport_size := get_viewport().get_visible_rect().size
+	var below_y := button_rect.position.y + button_rect.size.y
+	if below_y + popup_size.y > viewport_size.y:
+		panel.position = Vector2(button_rect.position.x, button_rect.position.y - popup_size.y)
+	else:
+		panel.position = Vector2(button_rect.position.x, below_y)
+
+
+func _close_dropdown_popup() -> void:
+	if _open_dropdown_overlay != null:
+		_open_dropdown_overlay.queue_free()
+		_open_dropdown_overlay = null
 
 
 # =============================================================================

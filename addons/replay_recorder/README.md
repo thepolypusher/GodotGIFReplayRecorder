@@ -44,14 +44,7 @@ The entire encoder is pure GDScript with no native dependencies.
 
 Developers can configure an image watermark that is alpha-blended onto every exported frame. The watermark is scaled to fill the export resolution and rendered at a configurable opacity (default 5%).
 
-A metadata template string is embedded in the GIF as a Comment Extension. Built-in variables include `{project_name}`, `{timestamp}`, `{resolution}`, `{duration}`, `{fps}`, and `{frames}`. Custom variables can be registered from game code:
-
-```gdscript
-# In your game's _ready():
-ReplayRecorder.set_metadata_var("version", "1.2.3")
-```
-
-Then use `{version}` in the metadata template project setting.
+A metadata template string is embedded in the GIF as a Comment Extension. Built-in variables include `{project_name}`, `{timestamp}`, `{resolution}`, `{duration}`, `{fps}`, and `{frames}`. Custom variables can be registered from game code (see [Programmatic Control](#programmatic-control)).
 
 ## Developer Settings
 
@@ -70,40 +63,65 @@ Configure under Project > Project Settings > addons/replay_recorder/:
 | `watermark_opacity` | `0.05` | Watermark alpha (0.01 = barely visible, 1.0 = opaque) |
 | `metadata_template` | `{project_name} \| {timestamp} \| {resolution}` | GIF comment metadata. Leave empty to omit |
 
-## Exposing Settings to Players
+## Programmatic Control
 
-The recorder's player-facing settings can be wired into your game's options menu. Buffer duration controls how many seconds of gameplay are available for replay, and `estimate_buffer_size_mb()` lets you show the memory cost alongside a slider:
+The recorder exposes a small API for wiring into your game's options menu and for pausing capture in specific scenes (e.g. main menu, pause overlay, cutscenes).
+
+### Player-facing settings (persistent)
+
+These methods update the player's saved preferences in `user://replay_recorder.cfg` and survive restarts. Use them from your options menu:
 
 ```gdscript
-# Setting up a duration slider:
+ReplayRecorder.update_enabled(false)         # Turn the recorder off
+ReplayRecorder.update_capture_fps(15)        # 5–20 fps
+ReplayRecorder.update_buffer_duration(30.0)  # Clamped to (10, max_buffer_duration)
+```
+
+`update_enabled(false)` also clears any frames currently in the buffer.
+
+A typical options-menu duration slider:
+
+```gdscript
 slider.min_value = 10.0
 slider.max_value = ReplayRecorder.get_max_buffer_duration()
 slider.value = ReplayRecorder.buffer_duration
-
-# Showing estimated memory cost:
 label.text = "~%.1f MB" % ReplayRecorder.estimate_buffer_size_mb(slider.value)
 
-# When the player changes the slider:
 func _on_duration_slider_changed(value: float) -> void:
     ReplayRecorder.update_buffer_duration(value)
     label.text = "~%.1f MB" % ReplayRecorder.estimate_buffer_size_mb(value)
 ```
 
-`estimate_buffer_size_mb()` uses the actual observed compression ratio once frames exist in the buffer. Before any frames are captured, it falls back to a conservative heuristic. You can also pass explicit parameters to estimate for a different configuration:
+`estimate_buffer_size_mb()` uses the actual observed compression ratio once frames exist in the buffer. Before any frames are captured, it falls back to a conservative heuristic. You can also pass explicit parameters to estimate a different configuration:
 
 ```gdscript
-# Estimate for a specific duration, resolution, and frame rate:
 var mb := ReplayRecorder.estimate_buffer_size_mb(30.0, 640, 360, 20)
 ```
 
-Capture FPS and enabled state can also be updated at runtime:
+### Per-scene pause (transient)
+
+To stop capture while a specific scene is active *without* changing the player's saved preference, set the `enabled` property directly:
 
 ```gdscript
-ReplayRecorder.update_capture_fps(15)
-ReplayRecorder.update_enabled(false)
+func _ready() -> void:
+    ReplayRecorder.enabled = false  # Pause capture in this scene
+
+func _exit_tree() -> void:
+    ReplayRecorder.enabled = true   # Resume when the scene unloads
 ```
 
-All player settings are automatically saved to `user://replay_recorder.cfg`.
+This stops capture immediately, preserves frames already in the buffer, and is not written to disk. Use this for main menus, pause screens, or cutscenes you don't want recorded. Reach for `update_enabled()` instead when the player toggles the recorder from an options menu.
+
+### Custom metadata variables
+
+Register custom variables for the GIF metadata template:
+
+```gdscript
+# In your game's _ready():
+ReplayRecorder.set_metadata_var("version", "1.2.3")
+```
+
+Then use `{version}` in the `metadata_template` project setting.
 
 ## Player Controls
 

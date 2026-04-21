@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.2
+
+### Fixed
+- Asset Library downloads no longer include repository screenshots and icon. `.gitattributes` now uses a whitelist (`/**  export-ignore`, `/addons  !export-ignore`) so only the `addons/` folder is shipped, and normalizes text files to LF line endings.
+
 ## v1.1.1
 
 ### Fixed

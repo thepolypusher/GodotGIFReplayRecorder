@@ -53,6 +53,16 @@ var _previous_mouse_mode: Input.MouseMode = Input.MOUSE_MODE_VISIBLE
 # --- Internal ---
 var _can_run: bool = false
 
+# --- Threading ---
+# _pending_frames holds raw captures waiting for CPU processing by the worker thread.
+# { "image": Image, "timestamp": float, "index": int }
+var _worker_thread: Thread
+var _pending_mutex: Mutex = Mutex.new()   # guards _pending_frames
+var _buffer_mutex: Mutex = Mutex.new()    # guards _frame_buffer and _current_memory_usage
+var _work_semaphore: Semaphore = Semaphore.new()
+var _pending_frames: Array[Dictionary] = []
+var _should_stop: bool = false
+
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -77,6 +87,10 @@ func _ready() -> void:
 
 	_capture_interval = 1.0 / capture_fps
 	_can_run = true
+
+	_worker_thread = Thread.new()
+	_worker_thread.start(_worker_loop)
+
 	set_process(enabled)
 
 	print("[GIFReplayRecorder] Ready — %dx%d @ %dfps, buffer %.0fs (~%.1fMB), toggle: %s" % [
@@ -118,6 +132,9 @@ func open_ui() -> void:
 		print("[GIFReplayRecorder] No frames buffered yet.")
 		return
 
+	# Drain the worker queue so the buffer is complete before the UI reads it.
+	_drain_pending_frames()
+
 	_was_already_paused = get_tree().paused
 	_previous_mouse_mode = Input.mouse_mode
 	get_tree().paused = true
@@ -147,10 +164,14 @@ func close_ui() -> void:
 
 
 func get_frame_count() -> int:
-	return _frame_buffer.size()
+	_buffer_mutex.lock()
+	var count := _frame_buffer.size()
+	_buffer_mutex.unlock()
+	return count
 
 
 func get_frame_image(buffer_index: int) -> Image:
+	_buffer_mutex.lock()
 	assert(
 		buffer_index >= 0 and buffer_index < _frame_buffer.size(),
 		"[GIFReplayRecorder] buffer_index %d out of range (0..%d)" % [
@@ -158,22 +179,32 @@ func get_frame_image(buffer_index: int) -> Image:
 		]
 	)
 	var entry: Dictionary = _frame_buffer[buffer_index]
+	_buffer_mutex.unlock()
 	var raw: PackedByteArray = entry.data.decompress(entry.raw_size, FileAccess.COMPRESSION_ZSTD)
 	return Image.create_from_data(_buffer_width, _buffer_height, false, Image.FORMAT_RGBA8, raw)
 
 
 func get_frame_compressed_data(buffer_index: int) -> Dictionary:
-	return _frame_buffer[buffer_index]
+	_buffer_mutex.lock()
+	var data := _frame_buffer[buffer_index]
+	_buffer_mutex.unlock()
+	return data
 
 
 func get_frame_timestamp(buffer_index: int) -> float:
-	return _frame_buffer[buffer_index].timestamp
+	_buffer_mutex.lock()
+	var ts: float = _frame_buffer[buffer_index].timestamp
+	_buffer_mutex.unlock()
+	return ts
 
 
 func get_buffer_duration_seconds() -> float:
-	if _frame_buffer.size() < 2:
-		return 0.0
-	return _frame_buffer.back().timestamp - _frame_buffer.front().timestamp
+	_buffer_mutex.lock()
+	var duration := 0.0
+	if _frame_buffer.size() >= 2:
+		duration = _frame_buffer.back().timestamp - _frame_buffer.front().timestamp
+	_buffer_mutex.unlock()
+	return duration
 
 
 func get_export_directory() -> String:
@@ -209,7 +240,9 @@ func update_capture_fps(new_fps: int) -> void:
 
 func update_buffer_duration(new_seconds: float) -> void:
 	buffer_duration = clampf(new_seconds, 10.0, _max_buffer_duration)
+	_buffer_mutex.lock()
 	_evict_over_time_limit()
+	_buffer_mutex.unlock()
 	save_player_settings()
 
 
@@ -235,10 +268,13 @@ func estimate_buffer_size_mb(
 	var total_frames := ceili(duration_seconds * fps)
 	var avg_frame_bytes: float
 
-	if _frame_buffer.size() > 0 and _current_memory_usage > 0:
-		# Scale observed average by resolution ratio
-		var observed_avg := float(_current_memory_usage) / _frame_buffer.size()
-		var observed_pixels := _buffer_width * _buffer_height
+	_buffer_mutex.lock()
+	var has_frames := _frame_buffer.size() > 0 and _current_memory_usage > 0
+	var observed_avg: float = float(_current_memory_usage) / float(max(_frame_buffer.size(), 1))
+	var observed_pixels := _buffer_width * _buffer_height
+	_buffer_mutex.unlock()
+
+	if has_frames:
 		var target_pixels := width * height
 		avg_frame_bytes = observed_avg * float(target_pixels) / float(observed_pixels)
 	else:
@@ -249,14 +285,20 @@ func estimate_buffer_size_mb(
 
 
 func get_current_memory_usage_mb() -> float:
-	return _current_memory_usage / (1024.0 * 1024.0)
+	_buffer_mutex.lock()
+	var mb := _current_memory_usage / (1024.0 * 1024.0)
+	_buffer_mutex.unlock()
+	return mb
 
 
 func update_enabled(new_enabled: bool) -> void:
 	enabled = new_enabled
 	if not enabled:
+		_drain_pending_frames()
+		_buffer_mutex.lock()
 		_frame_buffer.clear()
 		_current_memory_usage = 0
+		_buffer_mutex.unlock()
 	save_player_settings()
 
 
@@ -316,28 +358,74 @@ func get_metadata_string(
 
 
 func _capture_frame() -> void:
+	# GPU readback — must happen on the main thread. The stall here is unavoidable,
+	# but resize + compress are offloaded to the worker thread below.
 	var image := get_viewport().get_texture().get_image()
 	if image == null:
 		return
-	image.resize(_buffer_width, _buffer_height, Image.INTERPOLATE_BILINEAR)
-	if image.get_format() != Image.FORMAT_RGBA8:
-		image.convert(Image.FORMAT_RGBA8)
-	var raw_data := image.get_data()
-	var compressed := raw_data.compress(FileAccess.COMPRESSION_ZSTD)
 
-	var entry := {
-		"data": compressed,
-		"raw_size": raw_data.size(),
+	var pending := {
+		"image": image,
 		"timestamp": Time.get_ticks_msec() / 1000.0,
 		"index": _frame_index,
 	}
 	_frame_index += 1
-	_frame_buffer.append(entry)
-	_current_memory_usage += compressed.size()
-	_evict_over_time_limit()
+
+	_pending_mutex.lock()
+	_pending_frames.append(pending)
+	_pending_mutex.unlock()
+	_work_semaphore.post()
+
+
+func _worker_loop() -> void:
+	while true:
+		_work_semaphore.wait()
+
+		if _should_stop:
+			break
+
+		_pending_mutex.lock()
+		if _pending_frames.is_empty():
+			_pending_mutex.unlock()
+			continue
+		var pending: Dictionary = _pending_frames.pop_front()
+		_pending_mutex.unlock()
+
+		var image: Image = pending.image
+		image.resize(_buffer_width, _buffer_height, Image.INTERPOLATE_BILINEAR)
+		if image.get_format() != Image.FORMAT_RGBA8:
+			image.convert(Image.FORMAT_RGBA8)
+		var raw_data := image.get_data()
+		var compressed := raw_data.compress(FileAccess.COMPRESSION_ZSTD)
+
+		var entry := {
+			"data": compressed,
+			"raw_size": raw_data.size(),
+			"timestamp": pending.timestamp,
+			"index": pending.index,
+		}
+
+		_buffer_mutex.lock()
+		_frame_buffer.append(entry)
+		_current_memory_usage += compressed.size()
+		_evict_over_time_limit()
+		_buffer_mutex.unlock()
+
+
+## Block until the worker has processed all pending frames.
+## Call before reading the buffer from the main thread (e.g. when opening UI).
+func _drain_pending_frames() -> void:
+	while true:
+		_pending_mutex.lock()
+		var is_empty := _pending_frames.is_empty()
+		_pending_mutex.unlock()
+		if is_empty:
+			break
+		OS.delay_msec(1)
 
 
 func _evict_over_time_limit() -> void:
+	# Caller must hold _buffer_mutex.
 	if _frame_buffer.size() < 2:
 		return
 	var latest_time: float = _frame_buffer.back().timestamp
@@ -436,7 +524,13 @@ func _register_default_input_action() -> void:
 
 
 func _exit_tree() -> void:
-	# Clean up UI and any encoding thread
+	# Signal worker to stop and wait for it to finish cleanly.
+	if _worker_thread and _worker_thread.is_started():
+		_should_stop = true
+		_work_semaphore.post()
+		_worker_thread.wait_to_finish()
+
+	# Clean up UI
 	if _ui_instance != null:
 		if _ui_instance.has_method("force_cancel_encoding"):
 			_ui_instance.force_cancel_encoding()

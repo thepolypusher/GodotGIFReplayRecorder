@@ -610,11 +610,12 @@ func _on_save_pressed() -> void:
 
 	var buf_w: int = _recorder.get_buffer_width()
 	var buf_h: int = _recorder.get_buffer_height()
+	var buf_format: Image.Format = _recorder.get_frame_format()
 	var needs_resize: bool = _export_width != buf_w
 	_encoding_thread = Thread.new()
 	_encoding_thread.start(
 		_encode_thread_func.bind(
-			frame_entries, buf_w, buf_h, _export_fps,
+			frame_entries, buf_w, buf_h, buf_format, _export_fps,
 			_encoding_output_path, needs_resize, watermark, metadata,
 		)
 	)
@@ -622,7 +623,7 @@ func _on_save_pressed() -> void:
 
 func _encode_thread_func(
 	frame_entries: Array[Dictionary], buf_w: int, buf_h: int,
-	fps: int, output_path: String,
+	buf_format: Image.Format, fps: int, output_path: String,
 	needs_resize: bool, watermark: Image, metadata: String,
 ) -> void:
 	# Decompress frames, resize, and apply watermark in the thread (0-20% progress)
@@ -643,7 +644,7 @@ func _encode_thread_func(
 
 		var entry: Dictionary = frame_entries[i]
 		var raw: PackedByteArray = entry.data.decompress(entry.raw_size, FileAccess.COMPRESSION_ZSTD)
-		var img := Image.create_from_data(buf_w, buf_h, false, Image.FORMAT_RGBA8, raw)
+		var img := Image.create_from_data(buf_w, buf_h, false, buf_format, raw)
 		if needs_resize:
 			img.resize(_export_width, _export_height, Image.INTERPOLATE_BILINEAR)
 		if watermark != null:

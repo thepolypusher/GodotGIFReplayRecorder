@@ -11,6 +11,14 @@ extends Node
 const PLAYER_SETTINGS_PATH := "user://replay_recorder.cfg"
 const UI_SCENE_PATH := "res://addons/replay_recorder/replay_recorder_ui.tscn"
 
+# Maximum capture FPS — matches the cap enforced in update_capture_fps.
+# Used to compute ring buffer capacity at startup.
+const MAX_CAPTURE_FPS := 20
+
+# Frame storage format. RGB8 (no alpha) saves 25% memory and compression time
+# versus RGBA8, and is sufficient since game captures are fully opaque.
+const FRAME_FORMAT := Image.FORMAT_RGB8
+
 # --- Developer settings (from Project Settings, read once in _ready) ---
 var _export_directory: String
 var _ui_layer: int
@@ -34,14 +42,18 @@ var enabled: bool = true:
 		enabled = value
 		set_process(enabled and _can_run)
 var buffer_duration: float = 20.0
-var capture_fps: int = 20
+var capture_fps: int = MAX_CAPTURE_FPS
 
-# --- Rolling buffer ---
-# { "data": PackedByteArray (zstd-compressed RGBA8), "timestamp": float, "index": int }
-var _frame_buffer: Array[Dictionary] = []
+# --- Ring buffer ---
+# Pre-allocated fixed-size array. Eviction is O(1) — no element shifting.
+# Entries: { "data": PackedByteArray (zstd-compressed RGB8), "timestamp": float, "index": int, "raw_size": int }
+var _ring: Array = []          # pre-allocated to _ring_capacity slots
+var _ring_head: int = 0        # physical index of the oldest valid entry
+var _ring_count: int = 0       # number of valid entries currently in the ring
+var _ring_capacity: int = 0    # total allocated slots (max_buffer_duration * MAX_CAPTURE_FPS)
 var _current_memory_usage: int = 0
 var _frame_index: int = 0
-var _capture_interval: float = 1.0 / 20.0
+var _capture_interval: float = 1.0 / MAX_CAPTURE_FPS
 var _time_accumulator: float = 0.0
 
 # --- UI state ---
@@ -58,7 +70,7 @@ var _can_run: bool = false
 # { "image": Image, "timestamp": float, "index": int }
 var _worker_thread: Thread
 var _pending_mutex: Mutex = Mutex.new()   # guards _pending_frames
-var _buffer_mutex: Mutex = Mutex.new()    # guards _frame_buffer and _current_memory_usage
+var _buffer_mutex: Mutex = Mutex.new()    # guards ring buffer and _current_memory_usage
 var _work_semaphore: Semaphore = Semaphore.new()
 var _pending_frames: Array[Dictionary] = []
 var _should_stop: bool = false
@@ -87,6 +99,10 @@ func _ready() -> void:
 
 	_capture_interval = 1.0 / capture_fps
 	_can_run = true
+
+	# Pre-allocate ring buffer to the maximum possible frame count.
+	_ring_capacity = ceili(_max_buffer_duration * MAX_CAPTURE_FPS)
+	_ring.resize(_ring_capacity)
 
 	_worker_thread = Thread.new()
 	_worker_thread.start(_worker_loop)
@@ -128,7 +144,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func open_ui() -> void:
 	if _is_ui_open:
 		return
-	if _frame_buffer.is_empty():
+	if _ring_count == 0:
 		print("[GIFReplayRecorder] No frames buffered yet.")
 		return
 
@@ -165,7 +181,7 @@ func close_ui() -> void:
 
 func get_frame_count() -> int:
 	_buffer_mutex.lock()
-	var count := _frame_buffer.size()
+	var count := _ring_count
 	_buffer_mutex.unlock()
 	return count
 
@@ -173,27 +189,27 @@ func get_frame_count() -> int:
 func get_frame_image(buffer_index: int) -> Image:
 	_buffer_mutex.lock()
 	assert(
-		buffer_index >= 0 and buffer_index < _frame_buffer.size(),
+		buffer_index >= 0 and buffer_index < _ring_count,
 		"[GIFReplayRecorder] buffer_index %d out of range (0..%d)" % [
-			buffer_index, _frame_buffer.size() - 1,
+			buffer_index, _ring_count - 1,
 		]
 	)
-	var entry: Dictionary = _frame_buffer[buffer_index]
+	var entry: Dictionary = _ring_get(buffer_index)
 	_buffer_mutex.unlock()
 	var raw: PackedByteArray = entry.data.decompress(entry.raw_size, FileAccess.COMPRESSION_ZSTD)
-	return Image.create_from_data(_buffer_width, _buffer_height, false, Image.FORMAT_RGBA8, raw)
+	return Image.create_from_data(_buffer_width, _buffer_height, false, FRAME_FORMAT, raw)
 
 
 func get_frame_compressed_data(buffer_index: int) -> Dictionary:
 	_buffer_mutex.lock()
-	var data := _frame_buffer[buffer_index]
+	var data: Dictionary = _ring_get(buffer_index)
 	_buffer_mutex.unlock()
 	return data
 
 
 func get_frame_timestamp(buffer_index: int) -> float:
 	_buffer_mutex.lock()
-	var ts: float = _frame_buffer[buffer_index].timestamp
+	var ts: float = _ring_get(buffer_index).timestamp
 	_buffer_mutex.unlock()
 	return ts
 
@@ -201,8 +217,8 @@ func get_frame_timestamp(buffer_index: int) -> float:
 func get_buffer_duration_seconds() -> float:
 	_buffer_mutex.lock()
 	var duration := 0.0
-	if _frame_buffer.size() >= 2:
-		duration = _frame_buffer.back().timestamp - _frame_buffer.front().timestamp
+	if _ring_count >= 2:
+		duration = _ring_get(_ring_count - 1).timestamp - _ring_get(0).timestamp
 	_buffer_mutex.unlock()
 	return duration
 
@@ -228,12 +244,16 @@ func get_buffer_height() -> int:
 	return _buffer_height
 
 
+func get_frame_format() -> Image.Format:
+	return FRAME_FORMAT
+
+
 func get_ui_layer() -> int:
 	return _ui_layer
 
 
 func update_capture_fps(new_fps: int) -> void:
-	capture_fps = clampi(new_fps, 5, 20)
+	capture_fps = clampi(new_fps, 5, MAX_CAPTURE_FPS)
 	_capture_interval = 1.0 / capture_fps
 	save_player_settings()
 
@@ -269,8 +289,8 @@ func estimate_buffer_size_mb(
 	var avg_frame_bytes: float
 
 	_buffer_mutex.lock()
-	var has_frames := _frame_buffer.size() > 0 and _current_memory_usage > 0
-	var observed_avg: float = float(_current_memory_usage) / float(max(_frame_buffer.size(), 1))
+	var has_frames := _ring_count > 0 and _current_memory_usage > 0
+	var observed_avg: float = float(_current_memory_usage) / float(max(_ring_count, 1))
 	var observed_pixels := _buffer_width * _buffer_height
 	_buffer_mutex.unlock()
 
@@ -278,8 +298,8 @@ func estimate_buffer_size_mb(
 		var target_pixels := width * height
 		avg_frame_bytes = observed_avg * float(target_pixels) / float(observed_pixels)
 	else:
-		# Conservative heuristic: RGBA8 raw size with ~4:1 zstd compression
-		avg_frame_bytes = float(width * height * 4) / 4.0
+		# Conservative heuristic: RGB8 raw size with ~4:1 zstd compression
+		avg_frame_bytes = float(width * height * 3) / 4.0
 
 	return (total_frames * avg_frame_bytes) / (1024.0 * 1024.0)
 
@@ -296,8 +316,7 @@ func update_enabled(new_enabled: bool) -> void:
 	if not enabled:
 		_drain_pending_frames()
 		_buffer_mutex.lock()
-		_frame_buffer.clear()
-		_current_memory_usage = 0
+		_ring_clear()
 		_buffer_mutex.unlock()
 	save_player_settings()
 
@@ -393,8 +412,8 @@ func _worker_loop() -> void:
 
 		var image: Image = pending.image
 		image.resize(_buffer_width, _buffer_height, Image.INTERPOLATE_BILINEAR)
-		if image.get_format() != Image.FORMAT_RGBA8:
-			image.convert(Image.FORMAT_RGBA8)
+		if image.get_format() != FRAME_FORMAT:
+			image.convert(FRAME_FORMAT)
 		var raw_data := image.get_data()
 		var compressed := raw_data.compress(FileAccess.COMPRESSION_ZSTD)
 
@@ -406,8 +425,7 @@ func _worker_loop() -> void:
 		}
 
 		_buffer_mutex.lock()
-		_frame_buffer.append(entry)
-		_current_memory_usage += compressed.size()
+		_ring_push(entry)
 		_evict_over_time_limit()
 		_buffer_mutex.unlock()
 
@@ -424,15 +442,55 @@ func _drain_pending_frames() -> void:
 		OS.delay_msec(1)
 
 
+# =============================================================================
+# Ring Buffer
+# =============================================================================
+
+
+## Push a new entry. If the ring is full, the oldest entry is overwritten.
+## Caller must hold _buffer_mutex.
+func _ring_push(entry: Dictionary) -> void:
+	var tail := (_ring_head + _ring_count) % _ring_capacity
+	if _ring_count == _ring_capacity:
+		# Full: reclaim memory from the oldest slot before overwriting it.
+		_current_memory_usage -= (_ring[_ring_head] as Dictionary).data.size()
+		_ring_head = (_ring_head + 1) % _ring_capacity
+	else:
+		_ring_count += 1
+	_ring[tail] = entry
+	_current_memory_usage += entry.data.size()
+
+
+## Return the entry at logical index i (0 = oldest). Caller must hold _buffer_mutex.
+func _ring_get(i: int) -> Dictionary:
+	return _ring[(_ring_head + i) % _ring_capacity]
+
+
+## Remove the oldest entry. Caller must hold _buffer_mutex.
+func _ring_pop_oldest() -> void:
+	_current_memory_usage -= (_ring[_ring_head] as Dictionary).data.size()
+	_ring[_ring_head] = null
+	_ring_head = (_ring_head + 1) % _ring_capacity
+	_ring_count -= 1
+
+
+## Reset the ring to empty. Caller must hold _buffer_mutex.
+func _ring_clear() -> void:
+	for i in _ring_capacity:
+		_ring[i] = null
+	_ring_head = 0
+	_ring_count = 0
+	_current_memory_usage = 0
+
+
 func _evict_over_time_limit() -> void:
 	# Caller must hold _buffer_mutex.
-	if _frame_buffer.size() < 2:
+	if _ring_count < 2:
 		return
-	var latest_time: float = _frame_buffer.back().timestamp
+	var latest_time: float = _ring_get(_ring_count - 1).timestamp
 	var cutoff := latest_time - buffer_duration
-	while _frame_buffer.size() > 1 and _frame_buffer[0].timestamp < cutoff:
-		var evicted: Dictionary = _frame_buffer.pop_front()
-		_current_memory_usage -= evicted.data.size()
+	while _ring_count > 1 and _ring_get(0).timestamp < cutoff:
+		_ring_pop_oldest()
 
 
 # =============================================================================

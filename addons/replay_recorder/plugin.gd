@@ -19,6 +19,10 @@ const AUTOLOAD_PATH := "res://addons/replay_recorder/replay_recorder.gd"
 ## buffer_resolution ....... Capture width in pixels (height derived from viewport aspect
 ##                           ratio). Higher = better GIF quality but more memory per
 ##                           second of buffer. Requires restart.
+## capture_format .......... Pixel format for the frame buffer. RGB8 (default) is sufficient
+##                           for fully opaque games. RGBA8 preserves alpha for games with
+##                           transparent backgrounds (GIF output will have 1-bit transparency).
+##                           Requires restart.
 ## default_buffer_duration .. How many seconds of gameplay to keep in the rolling buffer.
 ##                           Players can change this at runtime (10–60s). Call
 ##                           estimate_buffer_size_mb() to preview memory cost.
@@ -60,6 +64,12 @@ const SETTINGS := {
 		"type": TYPE_INT,
 		"hint": PROPERTY_HINT_RANGE,
 		"hint_string": "240,960,1",
+	},
+	"addons/replay_recorder/capture_format": {
+		"value": Image.FORMAT_RGB8,
+		"type": TYPE_INT,
+		"hint": PROPERTY_HINT_ENUM,
+		"hint_string": "RGB8:4,RGBA8:5",
 	},
 	"addons/replay_recorder/default_buffer_duration": {
 		"value": 20.0,
@@ -129,3 +139,4 @@ func _register_settings() -> void:
 			"hint_string": info.hint_string,
 		})
 	ProjectSettings.set_restart_if_changed("addons/replay_recorder/buffer_resolution", true)
+	ProjectSettings.set_restart_if_changed("addons/replay_recorder/capture_format", true)

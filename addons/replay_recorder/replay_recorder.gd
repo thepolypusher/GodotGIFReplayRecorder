@@ -15,16 +15,13 @@ const UI_SCENE_PATH := "res://addons/replay_recorder/replay_recorder_ui.tscn"
 # Used to compute ring buffer capacity at startup.
 const MAX_CAPTURE_FPS := 20
 
-# Frame storage format. RGB8 (no alpha) saves 25% memory and compression time
-# versus RGBA8, and is sufficient since game captures are fully opaque.
-const FRAME_FORMAT := Image.FORMAT_RGB8
-
 # --- Developer settings (from Project Settings, read once in _ready) ---
 var _export_directory: String
 var _ui_layer: int
 var _toggle_action: String
 var _buffer_width: int
 var _buffer_height: int
+var _frame_format: Image.Format
 var _default_buffer_duration: float
 var _max_buffer_duration: float
 var _enabled_in_release: bool
@@ -197,7 +194,7 @@ func get_frame_image(buffer_index: int) -> Image:
 	var entry: Dictionary = _ring_get(buffer_index)
 	_buffer_mutex.unlock()
 	var raw: PackedByteArray = entry.data.decompress(entry.raw_size, FileAccess.COMPRESSION_ZSTD)
-	return Image.create_from_data(_buffer_width, _buffer_height, false, FRAME_FORMAT, raw)
+	return Image.create_from_data(_buffer_width, _buffer_height, false, _frame_format, raw)
 
 
 func get_frame_compressed_data(buffer_index: int) -> Dictionary:
@@ -245,7 +242,7 @@ func get_buffer_height() -> int:
 
 
 func get_frame_format() -> Image.Format:
-	return FRAME_FORMAT
+	return _frame_format
 
 
 func get_ui_layer() -> int:
@@ -412,8 +409,8 @@ func _worker_loop() -> void:
 
 		var image: Image = pending.image
 		image.resize(_buffer_width, _buffer_height, Image.INTERPOLATE_BILINEAR)
-		if image.get_format() != FRAME_FORMAT:
-			image.convert(FRAME_FORMAT)
+		if image.get_format() != _frame_format:
+			image.convert(_frame_format)
 		var raw_data := image.get_data()
 		var compressed := raw_data.compress(FileAccess.COMPRESSION_ZSTD)
 
@@ -511,6 +508,9 @@ func _load_developer_settings() -> void:
 	var buf_width: int = ProjectSettings.get_setting(
 		"addons/replay_recorder/buffer_resolution", 640
 	)
+	_frame_format = ProjectSettings.get_setting(
+		"addons/replay_recorder/capture_format", Image.FORMAT_RGB8
+	) as Image.Format
 	_default_buffer_duration = ProjectSettings.get_setting(
 		"addons/replay_recorder/default_buffer_duration", 20.0
 	)

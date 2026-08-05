@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.0
+
+### Added
+- `capture_format` project setting (RGB8/RGBA8). RGB8 is the default and is sufficient for opaque games; RGBA8 preserves alpha for games with transparent backgrounds. Requires restart.
+
+### Changed
+- Resize and compression are offloaded to a worker thread, keeping the capture path off the main thread.
+- The frame buffer is now a pre-allocated ring with O(1) eviction, replacing an array that shifted every element on each evict. Combined with RGB8 this reduces buffer memory by roughly 25%.
+- Capture cadence runs on wall-clock time rather than the process delta. Above `Engine.time_scale = 1.0` the recorder previously captured well beyond `capture_fps`, inflating buffer memory and producing exports that played back in slow motion. Eviction was already real-time; both ends now agree. Capture remains suspended while `Engine.time_scale` is 0.
+
+### Fixed
+- Crash on reopening the recorder UI (`buffer_index N out of range`). The worker dequeued a frame before resizing and compressing it, so the drain performed on open saw an empty queue while a frame was still in flight. That frame's late push evicted from the front of the ring while the UI was building thumbnails against the frame count it had just snapshotted. The worker now dequeues only once a frame has landed in the ring.
+- Frame accessors (`get_frame_image`, `get_frame_compressed_data`, `get_frame_timestamp`) now always release the buffer mutex and clamp a stale index rather than asserting. The previous assertion returned while still holding the mutex, deadlocking the worker on its next push; and since `assert()` is stripped from release builds, the same stale index there dereferenced an evicted slot.
+
 ## v1.1.2
 
 ### Fixed

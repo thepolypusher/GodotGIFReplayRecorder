@@ -207,8 +207,12 @@ func _generate_thumbnails() -> void:
 	var count := mini(THUMBNAIL_COUNT, _buffer_size)
 	for i in count:
 		var buffer_idx := int(float(i) / (count - 1) * (_buffer_size - 1)) if count > 1 else 0
-		_thumbnail_buffer_indices.append(buffer_idx)
 		var img: Image = _recorder.get_frame_image(buffer_idx)
+		if img == null:
+			continue
+		# Index recorded only on success — _on_timeline_draw indexes this array
+		# in lockstep with _thumbnail_textures.
+		_thumbnail_buffer_indices.append(buffer_idx)
 		# Tiny thumbnails for timeline
 		img.resize(48, int(48.0 / _export_width * _export_height), Image.INTERPOLATE_NEAREST)
 		var tex := ImageTexture.create_from_image(img)
@@ -349,6 +353,8 @@ func _update_preview(buffer_index: int) -> void:
 	if buffer_index < 0 or buffer_index >= _buffer_size:
 		return
 	var img: Image = _recorder.get_frame_image(buffer_index)
+	if img == null:
+		return
 	_preview_texture.set_image(img)
 
 
@@ -575,7 +581,10 @@ func _on_save_pressed() -> void:
 	# Collect compressed frame data on main thread (fast — just reference copies)
 	var frame_entries: Array[Dictionary] = []
 	for i in range(_trim_start, _trim_end + 1):
-		frame_entries.append(_recorder.get_frame_compressed_data(i))
+		var entry: Dictionary = _recorder.get_frame_compressed_data(i)
+		if entry.is_empty():
+			continue
+		frame_entries.append(entry)
 
 	if frame_entries.is_empty():
 		return

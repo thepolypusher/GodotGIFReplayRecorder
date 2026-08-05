@@ -50,8 +50,8 @@ var _ring_count: int = 0       # number of valid entries currently in the ring
 var _ring_capacity: int = 0    # total allocated slots (max_buffer_duration * MAX_CAPTURE_FPS)
 var _current_memory_usage: int = 0
 var _frame_index: int = 0
-var _capture_interval: float = 1.0 / MAX_CAPTURE_FPS
-var _time_accumulator: float = 0.0
+var _capture_interval_msec: int = 1000 / MAX_CAPTURE_FPS
+var _last_capture_msec: int = 0
 
 # --- UI state ---
 var _ui_instance: Node = null
@@ -94,7 +94,7 @@ func _ready() -> void:
 	_register_default_input_action()
 	_load_player_settings()
 
-	_capture_interval = 1.0 / capture_fps
+	_capture_interval_msec = int(1000.0 / capture_fps)
 	_can_run = true
 
 	# Pre-allocate ring buffer to the maximum possible frame count.
@@ -112,14 +112,19 @@ func _ready() -> void:
 	])
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
 	if _is_ui_open:
 		return
+	# Cadence is wall-clock, not process delta: at Engine.time_scale above 1.0 a
+	# scaled delta captures well past capture_fps, and eviction is already real-time.
+	if is_zero_approx(Engine.time_scale):
+		return
 
-	_time_accumulator += delta
-	if _time_accumulator >= _capture_interval:
-		_time_accumulator = 0.0
-		_capture_frame()
+	var now_msec := Time.get_ticks_msec()
+	if now_msec - _last_capture_msec < _capture_interval_msec:
+		return
+	_last_capture_msec = now_msec
+	_capture_frame()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -141,18 +146,19 @@ func _unhandled_input(event: InputEvent) -> void:
 func open_ui() -> void:
 	if _is_ui_open:
 		return
-	if _ring_count == 0:
+	if get_frame_count() == 0:
 		print("[GIFReplayRecorder] No frames buffered yet.")
 		return
 
-	# Drain the worker queue so the buffer is complete before the UI reads it.
+	# Close the capture gate before draining, so the ring cannot change again
+	# between the drain and the UI snapshotting frame indices off it.
+	_is_ui_open = true
 	_drain_pending_frames()
 
 	_was_already_paused = get_tree().paused
 	_previous_mouse_mode = Input.mouse_mode
 	get_tree().paused = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	_is_ui_open = true
 
 	if _ui_instance == null:
 		var ui_scene := load(UI_SCENE_PATH) as PackedScene
@@ -183,31 +189,25 @@ func get_frame_count() -> int:
 	return count
 
 
+## Returns null when the buffer is empty.
 func get_frame_image(buffer_index: int) -> Image:
-	_buffer_mutex.lock()
-	assert(
-		buffer_index >= 0 and buffer_index < _ring_count,
-		"[GIFReplayRecorder] buffer_index %d out of range (0..%d)" % [
-			buffer_index, _ring_count - 1,
-		]
-	)
-	var entry: Dictionary = _ring_get(buffer_index)
-	_buffer_mutex.unlock()
+	var entry: Dictionary = _get_entry(buffer_index)
+	if entry.is_empty():
+		return null
 	var raw: PackedByteArray = entry.data.decompress(entry.raw_size, FileAccess.COMPRESSION_ZSTD)
 	return Image.create_from_data(_buffer_width, _buffer_height, false, _frame_format, raw)
 
 
+## Returns an empty Dictionary when the buffer is empty.
 func get_frame_compressed_data(buffer_index: int) -> Dictionary:
-	_buffer_mutex.lock()
-	var data: Dictionary = _ring_get(buffer_index)
-	_buffer_mutex.unlock()
-	return data
+	return _get_entry(buffer_index)
 
 
 func get_frame_timestamp(buffer_index: int) -> float:
-	_buffer_mutex.lock()
-	var ts: float = _ring_get(buffer_index).timestamp
-	_buffer_mutex.unlock()
+	var entry: Dictionary = _get_entry(buffer_index)
+	if entry.is_empty():
+		return 0.0
+	var ts: float = entry.timestamp
 	return ts
 
 
@@ -251,7 +251,7 @@ func get_ui_layer() -> int:
 
 func update_capture_fps(new_fps: int) -> void:
 	capture_fps = clampi(new_fps, 5, MAX_CAPTURE_FPS)
-	_capture_interval = 1.0 / capture_fps
+	_capture_interval_msec = int(1000.0 / capture_fps)
 	save_player_settings()
 
 
@@ -404,7 +404,7 @@ func _worker_loop() -> void:
 		if _pending_frames.is_empty():
 			_pending_mutex.unlock()
 			continue
-		var pending: Dictionary = _pending_frames.pop_front()
+		var pending: Dictionary = _pending_frames[0]
 		_pending_mutex.unlock()
 
 		var image: Image = pending.image
@@ -426,9 +426,15 @@ func _worker_loop() -> void:
 		_evict_over_time_limit()
 		_buffer_mutex.unlock()
 
+		# Dequeue only once the frame is in the ring: popping earlier would let
+		# _drain_pending_frames see an empty queue while this frame is in flight.
+		_pending_mutex.lock()
+		_pending_frames.pop_front()
+		_pending_mutex.unlock()
 
-## Block until the worker has processed all pending frames.
-## Call before reading the buffer from the main thread (e.g. when opening UI).
+
+## Block until the worker has processed all pending frames, including one it has
+## already picked up. Call before reading the buffer from the main thread.
 func _drain_pending_frames() -> void:
 	while true:
 		_pending_mutex.lock()
@@ -461,6 +467,19 @@ func _ring_push(entry: Dictionary) -> void:
 ## Return the entry at logical index i (0 = oldest). Caller must hold _buffer_mutex.
 func _ring_get(i: int) -> Dictionary:
 	return _ring[(_ring_head + i) % _ring_capacity]
+
+
+## Locking accessor for the public get_frame_* API. Callers index off a
+## get_frame_count() snapshot and the ring evicts from the front underneath them,
+## so a stale index clamps to the nearest live frame. Empty Dictionary if no frames.
+func _get_entry(buffer_index: int) -> Dictionary:
+	assert(buffer_index >= 0, "[GIFReplayRecorder] negative buffer_index %d" % buffer_index)
+	_buffer_mutex.lock()
+	var entry: Dictionary = {}
+	if _ring_count > 0:
+		entry = _ring_get(clampi(buffer_index, 0, _ring_count - 1))
+	_buffer_mutex.unlock()
+	return entry
 
 
 ## Remove the oldest entry. Caller must hold _buffer_mutex.
